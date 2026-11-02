@@ -1,5 +1,9 @@
 # ctrlX app builder
 
+> **Unofficial and unsupported.** This repository is the result of an **internship project**. It is a
+> proof of concept, **not an official Bosch Rexroth product**, and comes **without support, warranty or
+> maintenance commitment** (see `LICENSE`). Use at own risk and check every result before relying on it.
+
 Builds a **ctrlX app** (a Snapcraft `.snap`) inside a throw-away Docker container, for the
 CPU architectures **amd64** and **arm64**, from a project folder that contains `snap/snapcraft.yaml`.
 
@@ -16,7 +20,7 @@ only read from, plus the finished snap written back to it.
 > |---|---|---|
 > | **A** | Ubuntu 24.04 machine, rootless Docker | Tested on Ubuntu 24.04 with rootless Docker: all six languages, amd64 and arm64, 118 builds of the SDK 4.6.0 sample projects. The setup steps in Part 2 follow the Docker documentation. |
 > | **B** | ctrlX WORKS **App Build Environment** (QEMU/VirtualBox VM) | The App Build Environment started with the SDK's own Linux launcher (KVM) was set up following Part 2 and built 11 sample projects/architectures (dotnet, C++, Go, Java, Node.js, Python; amd64 and arm64). Lingering and the rootless service were confirmed to survive a reboot. |
-> | **C** | Docker on any computer, one file `Dockerfile.single` | Tested to be working on an **amd64 ctrlX CORE X7**, reached over SSH from VS Code on a Windows PC. **Not tested with Docker running directly on Windows (for example Docker Desktop).** If something fails, please report it as a bug to ariamalik.havidiansyah@boschrexroth.de. |
+> | **C** | Docker on any computer, one file `Dockerfile.single` | Tested to be working on an **amd64 ctrlX CORE X7**, reached over SSH from VS Code on a Windows PC. **Not tested with Docker running directly on Windows (for example Docker Desktop).** |
 >
 
 ---
@@ -92,7 +96,7 @@ nproc; free -h; df -h /  # CPUs, memory, free disk
 Needed: `x86_64`, at least about 15 GB free disk space, 4 GB RAM (more is better; see
 [Part 8](#8-something-went-wrong) if a build is "Killed").
 
-Optional: run the read-only probe and keep its output for support questions.
+Optional: run the read-only probe and keep its output for troubleshooting.
 It changes nothing and writes `ctrlx-probe-<time>.txt` into the current folder:
 
 ```bash
@@ -408,8 +412,7 @@ launcher script or the rootless setup. Typical use: a Linux machine where Docker
 > **Notice: untested on Windows.** `Dockerfile.single` has been tested to be working on an amd64 ctrlX
 > CORE X7 (Linux), reached over SSH from VS Code on a Windows PC. Docker running **directly on
 > Windows** (Docker Desktop) has **not** been tested, and the PowerShell command in Part 6.3 is
-> derived from the Linux one, not run. If a problem is found there, please report it as a bug
-> (what Docker and Windows versions, the full command, the last screen of output) to ariamalik.havidiansyah@boschrexroth.de.
+> derived from the Linux one, not run. No support is provided for it.
 
 ### 6.1 What is needed
 
@@ -611,6 +614,7 @@ that is not in use by a container, including the builder image.
 
 ## 10. Limits and what is not covered
 
+- **Unofficial, unsupported proof of concept.** Created as an internship project; not an official Bosch Rexroth product; no support, no maintenance commitment, no warranty.
 - **Core24 only.** Core22 and older are refused.
 - **Nothing has been run on a ctrlX CORE.** Builds are checked for the target CPU by reading the
   compiled files in the snap, not by running them.
@@ -620,8 +624,7 @@ that is not in use by a container, including the builder image.
   arm64 wheel is not built from source yet.
 - **Corporate proxy and company CA certificates** are not supported. This includes the App Build
   Environment's proxy variant (`px.exe`, gateway `10.0.2.2`).
-- **Docker running directly on Windows** (Path C, for example Docker Desktop) is **untested**; please
-  report bugs. Path C was reported working once, on an amd64 ctrlX CORE X7.
+- **Docker running directly on Windows** (Path C, for example Docker Desktop) is **untested**. Path C was reported working once, on an amd64 ctrlX CORE X7.
 - **Windows on ARM and Apple silicon** are not supported (the image is `linux/amd64`).
 - **Paths A and B setup steps** (Part 2) were replayed once on a fresh App Build Environment started on a Linux host with KVM; they were not replayed on a Windows host, and not on a plain Ubuntu machine.
 - **Builds are not bit-for-bit reproducible**, though all tool versions are pinned to exact
