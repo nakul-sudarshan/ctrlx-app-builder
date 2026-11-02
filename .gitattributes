@@ -1,0 +1,7 @@
+# Line endings must stay LF: a CRLF in a script breaks "#!/usr/bin/env bash" and the
+# heredoc delimiter in Dockerfile.single, and invalidates the embedded sha256 check.
+* text=auto eol=lf
+*.sh text eol=lf
+Dockerfile text eol=lf
+Dockerfile.single text eol=lf
+*.md text eol=lf

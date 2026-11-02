@@ -1,0 +1,19 @@
+# Build logs and result folders written by the launcher and the maintainer runner
+logs/
+ctrlx-run-results-*/
+ctrlx-run-all-*/
+ctrlx-image-record-*/
+ctrlx-ownership-check-*/
+ctrlx-image-timing-*/
+
+# Probe reports list IP addresses and routes: never commit them
+ctrlx-probe-*.txt
+
+# Built snaps and their checksums
+*.snap
+*.snap.sha256
+
+# Editor leftovers
+*.swp
+*.swo
+*~
