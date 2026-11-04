@@ -1,8 +1,5 @@
 # Standalone project-script-only variant of Dockerfile.single.
-# Build with this file alone: docker build --tag ctrlx-builder:norecipe --iidfile .image-id --file Dockerfile.norecipe .
-#
-#Author: Nakul Sudarshan (with help from Copilot and Claude)
-
+# Build with this file alone: docker build --tag ctrlx-builder:lite --file Dockerfile.lite .
 # ctrlX app builder (rootless Docker, Core24, amd64 host).
 #
 # One multi-language definition: .NET, C++, Go, Node.js, Python, Java. Tool layers for further
@@ -280,11 +277,9 @@ LABEL org.opencontainers.image.title="ctrlX app builder" \
 # Placed last so that script changes do not invalidate the download layers.
 COPY --chmod=755 <<'CTRLX_CONTAINER_BUILD_SCRIPT_END' /usr/local/bin/ctrlx-container-build
 #!/usr/bin/env bash
-#Author: Nakul Sudarshan (with help from Copilot and Claude)
-#
 # The project is copied to its SDK-relative position so existing SDK references resolve.
 # Only the project's build-snap-<arch>.sh is run; no build recipe is supplied here.
-# Exit codes: 0 ok, 2 usage, 3 unsupported project, 4 build failed, 5 wrong/missing snap.
+# Exit codes: 0 ok, 2 usage, 3 unsupported project, 4 build failed, 5 unexpected snap count.
 set -euo pipefail
 
 SDK=${CTRLX_SDK:-/sdk}
@@ -293,8 +288,7 @@ OUT=${CTRLX_OUT:-/out}
 
 LANG_ID=""
 ARCH=""
-NAME=""
-DRY_RUN=0
+NAME="user-project"
 
 die() {
     local code=$1
@@ -316,13 +310,12 @@ while [ $# -gt 0 ]; do
                 --name) NAME=$2 ;;
             esac
             shift 2 ;;
-        --dry-run) DRY_RUN=1; shift ;;
         *) die 2 "unknown argument: $1" ;;
     esac
 done
 
-[ -n "$LANG_ID" ] && [ -n "$ARCH" ] && [ -n "$NAME" ] \
-    || die 2 "usage: ctrlx-container-build --lang <lang> --arch <amd64|arm64> --name <project> [--dry-run]"
+[ -n "$LANG_ID" ] && [ -n "$ARCH" ] \
+    || die 2 "usage: ctrlx-container-build --lang <lang> --arch <amd64|arm64> [--name <project>]"
 
 case "$LANG_ID" in
     dotnet) GROUP=samples-net ;;
@@ -409,11 +402,7 @@ setup_arm64_apt() {
 }
 
 if [ "$ARCH" = arm64 ] && grep -Eq 'to arm64|:arm64' "$WORK/snap/snapcraft.yaml"; then
-    if [ "$DRY_RUN" = 1 ]; then
-        log "dry run: would refresh the arm64 package lists"
-    else
-        setup_arm64_apt
-    fi
+    setup_arm64_apt
 fi
 
 # SDK scripts from the release archive lack execute bits. Only the container copy
@@ -465,68 +454,25 @@ fi
 prepare_project_script
 prepare_snapcraft_yaml
 
-if [ "$DRY_RUN" = 1 ]; then
-    log "dry run: would run bash ./$script for $LANG_ID/$ARCH in $WORK"
-    exit 0
-fi
-
 log "building: lang=$LANG_ID arch=$ARCH name=$NAME script=$script"
 bash "./$script" || die 4 "build failed (see the log above)"
 
-# ---- collect and check the snap ---------------------------------------------
+# ---- collect the snap -------------------------------------------------------
 mapfile -t snaps < <(find "$WORK" -maxdepth 1 -type f -name '*.snap')
 [ "${#snaps[@]}" -eq 1 ] || die 5 "expected exactly one .snap in $WORK, found ${#snaps[@]}"
 snap=${snaps[0]}
 snapfile=$(basename "$snap")
-case "$snapfile" in
-    *"_${ARCH}.snap") ;;
-    *) die 5 "snap file name '$snapfile' does not end in _${ARCH}.snap" ;;
-esac
-
-meta=$(unsquashfs -no-progress -cat "$snap" meta/snap.yaml) \
-    || die 5 "cannot read meta/snap.yaml from $snapfile"
-base=$(printf '%s\n' "$meta" | awk '/^base:/{print $2; exit}')
-meta_arch=$(printf '%s\n' "$meta" | awk '/^architectures:/{f=1; next} f && /^- /{print $2; exit}')
-[ "$base" = core24 ] || die 5 "snap base is '$base', expected core24"
-[ "$meta_arch" = "$ARCH" ] || die 5 "snap architecture is '$meta_arch', expected $ARCH"
-
-# Report-only ELF check (a mismatch is a warning, not a failure).
-case "$ARCH" in
-    amd64) want='Advanced Micro Devices X86-64' ;;
-    arm64) want='AArch64' ;;
-esac
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
-unsquashfs -no-progress -no-xattrs -d "$tmp/snap" "$snap" >/dev/null \
-    || die 5 "cannot unpack $snapfile for inspection"
-declare -A machines=()
-mismatch=0
-while IFS= read -r -d '' f; do
-    [ "$(head -c4 "$f" | od -An -tx1 | tr -d ' \n')" = 7f454c46 ] || continue
-    m=$(readelf -h "$f" 2>/dev/null | sed -n 's/^ *Machine: *//p')
-    [ -n "$m" ] || m=unreadable
-    machines[$m]=$(( ${machines[$m]:-0} + 1 ))
-    if [ "$m" != "$want" ]; then
-        mismatch=$(( mismatch + 1 ))
-        printf 'WARN: %s is %s, expected %s\n' "${f#"$tmp/snap/"}" "$m" "$want" >&2
-    fi
-done < <(find "$tmp/snap" -type f -size +52c -print0)
-elf=""
-for m in "${!machines[@]}"; do elf+="${m// /_}=${machines[$m]};"; done
-[ -n "$elf" ] || elf="none"
 
 cp "$snap" "$OUT/$snapfile"
 ( cd "$OUT" && sha256sum "$snapfile" > "$snapfile.sha256" )
 bytes=$(stat -c %s "$OUT/$snapfile")
 sum=$(cut -d' ' -f1 "$OUT/$snapfile.sha256")
-status=ok
-[ "$mismatch" -eq 0 ] || status=warn
 
-printf 'CTRLX_RESULT status=%s lang=%s arch=%s snap=%s bytes=%s sha256=%s base=%s elf=%s mismatches=%s\n' \
-    "$status" "$LANG_ID" "$ARCH" "$snapfile" "$bytes" "$sum" "$base" "$elf" "$mismatch"
+printf 'CTRLX_RESULT status=ok lang=%s arch=%s snap=%s bytes=%s sha256=%s\n' \
+    "$LANG_ID" "$ARCH" "$snapfile" "$bytes" "$sum"
 log "snap written to the project folder: $snapfile"
 CTRLX_CONTAINER_BUILD_SCRIPT_END
-RUN echo "93902d1e6586eae69a0564fc7abd9a8a0df8b9ba77bee36bc8149fe988bc27ff  /usr/local/bin/ctrlx-container-build" | sha256sum --check --status
+RUN echo "6074b602bee32d383baf6ed1e78aa59418a86db13dc643458de01bf04ec2270b  /usr/local/bin/ctrlx-container-build" | sha256sum --check --status
 
 WORKDIR /build
 ENTRYPOINT ["/usr/local/bin/ctrlx-container-build"]

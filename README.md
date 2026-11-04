@@ -11,8 +11,9 @@ Supported: **Core24 only** (`base: core24`), six languages: **C++, .NET, Go, Jav
 Projects with `base: core22` are refused on purpose.
 
 The ctrlX SDK does **not** have to be installed. The builder image downloads its own copy of the
-SDK and every tool, checks the downloads against pinned checksums, and the project folder is
-only read from, plus the finished snap written back to it.
+SDK and pinned tool archives, checking those downloads against checksums. Ubuntu APT packages are
+not pinned, and project scripts may download additional dependencies. The builder reads the
+project folder and writes the finished snap and its checksum back to it.
 
 > **Status of the working solution paths**
 >
@@ -57,7 +58,7 @@ host. Never add a user to the `docker` group, never start containers with `--pri
 never use a Docker that runs as root for this. Path C with Docker Desktop is the exception that
 cannot be avoided on Windows; see the notes in Part 6.
 
-Rough sizes to plan for (measured on an Ubuntu 24.04 workstation):
+Rough sizes to plan for (measured for the standard builder on an Ubuntu 24.04 workstation):
 
 | Item | Size |
 |---|---|
@@ -343,6 +344,7 @@ Rules:
   `core24` first.
 - Sample projects of the ctrlX SDK work as they are (they contain their own
   `build-snap-<arch>.sh`; the builder uses those if present, see "recipe" below).
+  `Dockerfile.lite` requires the matching project script.
 
 ### 4.3 Try it with an SDK sample (recommended first test)
 
@@ -505,34 +507,46 @@ Explained:
 - `${PWD}` (PowerShell) and `$PWD` (Bash) mean "the current folder". On Windows this becomes
   something like `C:\Users\me\my-app`, which Docker Desktop accepts.
 - Everything after the image name goes to the build script inside the container.
-- The command prints the build output; the last line begins with `CTRLX_RESULT` (Part 7).
+- The command prints the build output; a line near the end begins with `CTRLX_RESULT` (Part 7).
 - To keep a log, append `2>&1 | Tee-Object build.log` (PowerShell) or `2>&1 | tee build.log` (Bash).
 
 Run it a second time with `--arch arm64` to get the arm64 snap.
 
-#### Project-script-only variant: `Dockerfile.norecipe`
+#### Project-script-only variant: `Dockerfile.lite`
 
-`Dockerfile.norecipe` is a standalone copy with the same tools, but without built-in
-build recipes or a `--recipe` option. The project must contain `build-snap-amd64.sh`
-or `build-snap-arm64.sh` for the selected architecture; a missing script is rejected.
-The selected script is run through Bash from the container copy of the project.
-SDK-relative paths, script compatibility adjustments, snap checks and output files
+`Dockerfile.lite` is a standalone variant with the same tool layers as `Dockerfile.single`,
+but without built-in build recipes. It requires `build-snap-amd64.sh` or
+`build-snap-arm64.sh` in the project folder for the selected architecture; a missing
+script is rejected with exit code 3. The selected script runs through Bash from the
+container copy of the project. SDK-relative paths and script compatibility adjustments
 are handled as in `Dockerfile.single`.
 
-Build the image from the folder containing `Dockerfile.norecipe` (Bash):
+The options `--lang` and `--arch` are required; their values are listed in the table
+above. `--name` is optional and defaults to `user-project`; provide the project folder
+name if the project depends on it. Neither `--recipe` nor `--dry-run` is supported.
+
+The input `snap/snapcraft.yaml` is checked for `base: core24`, and exactly one `.snap`
+must be produced in the project copy's top-level folder. Unlike `Dockerfile.single`,
+the lite variant does **not** check the filename's architecture suffix, the snap's base
+or architecture metadata, or its ELF files. A successful result therefore does not
+verify the snap's architecture or contents. Inspect them independently or use
+`Dockerfile.single` for those checks (Part 7). The test results above refer to the
+other Dockerfiles and do not establish that this variant has been tested.
+
+Build the image from the folder containing `Dockerfile.lite` (Bash):
 
 ```bash
-docker build --tag ctrlx-builder:norecipe --iidfile .image-id --file Dockerfile.norecipe .
+docker build --tag ctrlx-builder:lite --file Dockerfile.lite .
 ```
 
 Then run the build, replacing the project path, language, architecture and folder name
-as needed. `.image-id` must refer to the image built above:
+as needed:
 
 ```bash
 docker run --rm \
   --volume "/path/to/project:/project:ro" \
   --volume "/path/to/project:/out" \
-  "$(cat .image-id)" \
+  ctrlx-builder:lite \
   --lang dotnet --arch amd64 --name my-app
 ```
 
@@ -563,7 +577,9 @@ its SHA-256 value in the final `RUN` instruction must also be updated.
 
 ## 7. Read the result
 
-The last line of a build looks like this:
+### Paths A and B and `Dockerfile.single`
+
+Near the end of a build, a line looks like this:
 
 ```
 CTRLX_RESULT status=ok lang=dotnet arch=amd64 snap=hello.world_1.0.0_amd64.snap bytes=16973824 sha256=... base=core24 elf=... mismatches=0
@@ -571,20 +587,38 @@ CTRLX_RESULT status=ok lang=dotnet arch=amd64 snap=hello.world_1.0.0_amd64.snap 
 
 | Field | Meaning |
 |---|---|
-| `status=ok` | Snap built; every compiled file inside is for the requested CPU. |
-| `status=warn` | Snap built, but some files inside are for a **different** CPU (see below). Not a build error. |
+| `status=ok` | Snap built with the expected filename suffix, base and architecture metadata; no mismatched ELF files were reported. |
+| `status=warn` | Snap built, but at least one inspected ELF file has a **different** CPU type or could not be read. Not a build error. |
 | `snap=` | File name of the snap, written into the project folder. |
 | `sha256=` | Checksum of the snap; the same value is in `<snap>.sha256`. |
 | `base=core24` | The base the snap was built for. |
-| `mismatches=` | Number of files inside the snap whose CPU does not match the target. |
+| `mismatches=` | Number of inspected ELF files whose CPU does not match the target or could not be read. |
 
 `warn` is expected for projects that use the ctrlX **Data Layer** (the SDK delivers its Debian
 packages with mixed CPU content) and for some Python and Java projects. Whether such content is
 acceptable is a policy decision that is not made yet: treat `warn` as "built, needs a look".
-`mismatches=0` and `status=ok` is the clean case.
+`mismatches=0` and `status=ok` means that no mismatch was reported by this check.
 
-Where to find the files: in the project folder, `<name>_<version>_<arch>.snap` and
-`<name>_<version>_<arch>.snap.sha256`. In Paths A and B the log is in `ctrlx-build/logs/`.
+### `Dockerfile.lite`
+
+The lite variant produces a shorter result line:
+
+```
+CTRLX_RESULT status=ok lang=dotnet arch=amd64 snap=hello.world_1.0.0_amd64.snap bytes=16973824 sha256=...
+```
+
+This means the project script succeeded, exactly one `.snap` was found in the copied
+project's top-level folder, and it was copied to the output with a checksum. `arch`
+is the **requested** architecture, not a value checked in the snap. The line has no
+`base`, `elf` or `mismatches` fields, and the lite variant never emits `status=warn`.
+The filename's architecture suffix, snap metadata and ELF contents are not checked;
+verify them separately or use the full builder before relying on the result.
+
+Where to find the files: the `.snap` and its `.sha256` are in the output folder (the
+project folder in the examples). The full builder checks the `_<arch>.snap` suffix;
+the lite variant retains whatever filename the project script produced. Existing output
+files with the same names are overwritten. In Paths A and B the log is in
+`ctrlx-build/logs/`.
 
 Builds are **not bit-for-bit reproducible**: building twice gives two different checksums for the
 same sources. That is normal.
@@ -602,16 +636,17 @@ Install the snap on a ctrlX CORE with the usual ctrlX OS UI procedure as defined
 | `rootless Docker is required ...` | The Docker in use is the root one. Redo Part 2.5 and Part 2.7, open a new terminal. |
 | `dockerd-rootless-setuptool.sh: ... unprivileged user namespaces` or AppArmor / `permission denied` while creating the network | Ubuntu 24.04 blocks user namespaces for programs without an AppArmor profile. The package `docker-ce-rootless-extras` should bring the profile. Check `ls /etc/apparmor.d | grep -i rootless` and `sysctl kernel.apparmor_restrict_unprivileged_userns`. Search the output of `dockerd-rootless-setuptool.sh install` for the profile text it prints; create the file it names as `root` and run `sudo systemctl reload apparmor`. This case has not been seen on a clean machine. |
 | `systemctl --user` says "Failed to connect to bus" | The session has no user manager. Log out and in again after `enable-linger`, or reboot the VM. Check `echo $XDG_RUNTIME_DIR` (must be `/run/user/<number>`). |
-| `snap/snapcraft.yaml not found` | The terminal is not in the project folder, or the builder folder is not inside the project (Part 4.2). Use `--project DIR`. |
+| `snap/snapcraft.yaml not found` | Paths A and B: check the project folder or use `--project DIR`. Plain Docker: mount the project folder containing `snap/snapcraft.yaml` at `/project`. |
 | Exit code 3, "core22" | The project is a Core22 project. Not supported; port it to `base: core24`. |
-| `$'\r': command not found`, `bash\r: No such file`, `/usr/bin/env: 'bash\r'` | The file has Windows line endings. Convert: `sed -i 's/\r$//' ctrlx-build.sh container-build.sh` (and the other scripts), or download/clone again with LF endings. For `Dockerfile.single`, get the original file again; do not open and re-save it in an editor that changes line endings. |
-| `sha256sum: WARNING` / `FAILED` during the image build of `Dockerfile.single` | The embedded script differs from what the file claims. The file was modified or its line endings were changed. Get a fresh copy. |
+| `build-snap-<arch>.sh is required` | `Dockerfile.lite` requires the project script for the selected architecture in the project folder. |
+| `$'\r': command not found`, `bash\r: No such file`, `/usr/bin/env: 'bash\r'` | The file has Windows line endings. Convert: `sed -i 's/\r$//' ctrlx-build.sh container-build.sh` (and the other scripts), or download/clone again with LF endings. For `Dockerfile.single` and `Dockerfile.lite`, get the original file again; do not open and re-save it in an editor that changes line endings. |
+| Image build fails at the embedded-script `sha256sum --check --status` step in `Dockerfile.single` or `Dockerfile.lite` | The embedded script differs from the recorded checksum, possibly because of changed line endings. The `--status` option suppresses the checksum message. Get a fresh copy, or update the checksum after an intentional edit to `Dockerfile.lite` (Part 6.3). |
 | Download errors, `x509`, `certificate signed by unknown authority`, timeouts during the image build | The network blocks or intercepts the download. Proxies and company CA certificates are not handled (Part 10). Test the path from a network without them. |
 | `curl: (35) Recv failure: Connection reset by peer` (or other `curl` download errors) during the image build, usually at `api.snapcraft.io` | A download was cut off; that site is slow and sometimes resets connections. Run the same command again: the steps that already finished are reused and only the failed download is repeated. Several repeats in a row point to the network (proxy, firewall); see Part 2.9 and Part 10. |
 | Build ends with `Killed`, or exit code `137` | Out of memory. Add swap on Ubuntu (a 4 GB swap file: `sudo fallocate -l 4G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile`; not permanent, not yet tested on the VM) or give Docker Desktop more memory. Java projects need the most. |
 | `no space left on device` | Disk full. See Part 9. |
-| Exit code 4 | The build step inside the container failed. Open the last screen of the log (`ctrlx-build/logs/`) and look for the first line with `error`. Typical causes are project-side: a wrong path in a `.sln`, a missing file that `.gitignore` hid, a package version that does not exist in the SDK feed. |
-| Exit code 5 | The build finished but no (or a wrong) snap was produced. Look at the end of the log. |
+| Exit code 4 | The build step inside the container failed. Look for the first line with `error` in the output (Paths A and B also save a log in `ctrlx-build/logs/`). Typical causes are project-side: a wrong path in a `.sln`, a missing file that `.gitignore` hid, a package version that does not exist in the SDK feed. |
+| Exit code 5 | The full builder did not find exactly one snap, or rejected its filename, metadata or unpacking. `Dockerfile.lite` found other than exactly one `.snap` in the copied project's top-level folder; it does not validate the snap itself. Look at the end of the output. |
 | `Permission denied` when starting `ctrlx-build.sh` | The execute bit was lost (zip, Windows). Use `bash ./ctrlx-build/ctrlx-build.sh`. |
 | A source folder of an SDK sample from the **release ZIP** fails with "permission denied" in a script | The ZIP carries no Unix file modes. Use a `git clone` of the SDK instead (Part 4.3). |
 
@@ -646,20 +681,22 @@ that is not in use by a container, including the builder image.
 ## 10. Limits and what is not covered
 
 - **Unofficial, unsupported proof of concept.** Created as an internship project; not an official Bosch Rexroth product; no support, no maintenance commitment, no warranty.
-- **Core24 only.** Core22 and older are refused.
-- **Nothing has been run on a ctrlX CORE.** Builds are checked for the target CPU by reading the
-  compiled files in the snap, not by running them.
-- **`status=warn` is not decided policy.** Which mixed-CPU files are acceptable is an open design
-  item.
-- **Python:** cross-building Python dependencies for arm64 uses ready-made wheels only; a missing
-  arm64 wheel is not built from source yet.
+- **Core24 projects only.** An input manifest without `base: core24` is refused;
+  `Dockerfile.lite` does not check the produced snap's base.
+- **The built apps have not been run on a ctrlX CORE.** The full builder checks the CPU type of
+  ELF files in the snap without running them. `Dockerfile.lite` does not perform that check.
+- **`status=warn` is not decided policy.** The full builder reports mixed-CPU or unreadable ELF
+  files as warnings; `Dockerfile.lite` does not inspect them.
+- **Python:** arm64 builds may require prebuilt ARM wheels. The image provides no separate native
+  ARM wheel-building service; dependency handling depends on the project script and Snapcraft.
 - **Corporate proxy and company CA certificates** are not supported. This includes the App Build
   Environment's proxy variant (`px.exe`, gateway `10.0.2.2`).
 - **Docker running directly on Windows** (Path C, for example Docker Desktop) is **untested**. Path C was reported working once, on an amd64 ctrlX CORE X7.
 - **Windows on ARM and Apple silicon** are not supported (the image is `linux/amd64`).
 - **Paths A and B setup steps** (Part 2) were replayed once on a fresh App Build Environment started on a Linux host with KVM; they were not replayed on a Windows host, and not on a plain Ubuntu machine.
-- **Builds are not bit-for-bit reproducible**, though all tool versions are pinned to exact
-  versions and checksums.
+- **Builds are not bit-for-bit reproducible.** Downloaded tool archives are pinned to versions
+  and checksums, but Ubuntu APT packages are not pinned and project scripts may download
+  additional dependencies.
 - **Licence:** MIT (file `LICENSE`). The SDK and every tool the image downloads keep their own licences; the builder image contains them and is not covered by this licence.
 
 ---
@@ -673,7 +710,7 @@ that is not in use by a container, including the builder image.
 | `Dockerfile` | The builder image definition (needs `container-build.sh` next to it). |
 | `container-build.sh` | The script that runs inside the container and does the build. |
 | `Dockerfile.single` | The same image in **one file** (the script is embedded). Generated. Path C. |
-| `Dockerfile.norecipe` | Standalone project-script-only variant; requires `build-snap-<arch>.sh`, with no built-in recipes or `--recipe` option. |
+| `Dockerfile.lite` | Standalone project-script-only variant; requires `build-snap-<arch>.sh` and does not check snap metadata or ELF architecture. |
 | `make-single-dockerfile.sh` | Regenerates `Dockerfile.single` from `Dockerfile` and `container-build.sh`; `--check` verifies it. For maintainers. |
 | `ctrlx-probe.sh` | Read-only check of a machine (resources, user namespaces, network, existing Docker). Changes nothing. |
 | `test-samples.sh` | Builds a folder of sample projects (for maintainers). |
